@@ -29,6 +29,14 @@ app.include_router(passport_router,  prefix="/passport",  tags=["Passport"])
 app.include_router(culture_router,   prefix="/culture",   tags=["Culture"])
 app.include_router(ai_router,        prefix="/ai",        tags=["AI"])
 
+@app.get("/")
+async def root():
+    return {
+        "message": "NhiLe HR API is running",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
 @app.get("/health")
 async def health():
     """Health check endpoint cho deployment."""
