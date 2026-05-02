@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>NhiLe HR · Culture OS</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600&family=Lexend:wght@500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        nl: {
+          brand: '#C0392B',
+          danger: '#DC2626',
+          warn: '#D97706',
+          ok: '#059669',
+          info: '#4F46E5',
+          bg: '#F4F5F8',
+          surface: '#FFFFFF',
+          surfaceAlt: '#F8F9FB',
+          borderL: '#EAECF0',
+          borderM: '#D1D5DB',
+          text: '#111827',
+          text2: '#4B5563',
+          muted: '#9CA3AF',
+        },
+      },
+      fontFamily: { sans: ['Be Vietnam Pro','sans-serif'], header: ['Lexend','sans-serif'] },
+      boxShadow: {
+        'card': '0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)',
+        'card-hover': '0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04)',
+        'modal': '0 20px 48px rgba(0,0,0,0.14)',
+      },
+    },
+  },
+};
+</script>
+
+<style>
+  html,body{font-family:'Be Vietnam Pro',sans-serif;background:#F4F5F8;color:#111827;-webkit-font-smoothing:antialiased;font-weight:400}
+  h1,h2,h3,h4,h5,h6{font-family:'Lexend',sans-serif;font-weight:600}
+  .num-tab{font-variant-numeric:tabular-nums}
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-thumb{background:#D1D5DB;border-radius:99px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  @keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes scaleIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
+  @keyframes countUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+  @keyframes urgentPulse{0%,100%{opacity:1}50%{opacity:.5}}
+  @keyframes botBorder{0%,100%{box-shadow:0 0 0 0 rgba(17,24,39,0.2)}50%{box-shadow:0 0 0 4px rgba(17,24,39,0.08)}}
+  .animate-fade-in{animation:fadeIn .3s ease-out both}
+  .animate-slide-up{animation:slideUp .4s ease-out both}
+  .animate-scale-in{animation:scaleIn .25s ease-out both}
+  .animate-urgent{animation:urgentPulse 1.5s ease-in-out infinite}
+  .animate-bot-border{animation:botBorder 2.4s ease-in-out infinite}
+
+  .hl-silence{background:#FEE2E2;border-bottom:2px solid #DC2626;padding:1px 3px;border-radius:3px;font-weight:500}
+  .hl-vague{background:#FEF3C7;border-bottom:2px solid #D97706;padding:1px 3px;border-radius:3px;font-weight:500}
+  .hl-direct{background:#D1FAE5;border-bottom:2px solid #059669;padding:1px 3px;border-radius:3px;font-weight:500}
+  .hl-face{background:#E0E7FF;border-bottom:2px solid #4F46E5;padding:1px 3px;border-radius:3px;font-weight:500}
+  .line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .line-clamp-3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+</style>
+
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react" src="tweaks-panel.jsx"></script>
+<script type="text/babel" data-presets="react" src="nhile-app.jsx"></script>
+</body>
+</html>
