@@ -1,3 +1,4 @@
+from typing import Any
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
@@ -9,7 +10,7 @@ class Settings(BaseSettings):
     secret_key: str
     environment: str = "development"
     gemini_api_key: str = ""
-    allowed_origins: list[str] = ["http://localhost:3000"]
+    allowed_origins: Any = ["http://localhost:3000"]
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
