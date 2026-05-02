@@ -9,20 +9,20 @@ class Settings(BaseSettings):
     secret_key: str
     environment: str = "development"
     gemini_api_key: str = ""
-    allowed_origins: list[str] = [
-        "http://localhost:3000",
-        "http://localhost:5500",
-        "http://localhost:5173",
-        "http://127.0.0.1:5500",
-        "http://127.0.0.1:8000",
-    ]
+    allowed_origins: list[str] = ["http://localhost:3000"]
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: str | list[str]) -> list[str]:
-        """Tự động chuyển đổi chuỗi phân cách bằng dấu phẩy thành List."""
-        if isinstance(v, str) and not v.startswith("["):
-            return [i.strip() for i in v.split(",")]
+        """Xử lý linh hoạt: chấp nhận cả List hoặc chuỗi phân cách bằng dấu phẩy."""
+        if isinstance(v, str):
+            if v.startswith("[") and v.endswith("]"):
+                import json
+                try:
+                    return json.loads(v)
+                except:
+                    v = v.strip("[]").replace("'", "").replace('"', "")
+            return [i.strip() for i in v.split(",") if i.strip()]
         return v
 
     class Config:
