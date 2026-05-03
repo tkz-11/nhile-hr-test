@@ -8,8 +8,12 @@ import google.generativeai as genai
 from app.config import settings
 
 genai.configure(api_key=settings.gemini_api_key)
-# gemini-2.0-flash: free tier 15 RPM / 1500 RPD — gấp ~5x quota của gemini-2.5-flash
-model = genai.GenerativeModel("gemini-2.0-flash")
+# gemini-2.5-flash-lite: model nhẹ nhất, free tier ~30 RPM / 1000 RPD ổn định.
+# gemini-2.0-flash hiện limit=0 cho free tier (Google đã thắt từ 2025).
+# Override qua env GEMINI_MODEL nếu account có Tier 1 và muốn dùng model mạnh hơn.
+import os
+_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+model = genai.GenerativeModel(_MODEL_NAME)
 
 # In-memory LRU cache cho prompt → response (tiết kiệm quota khi gõ lại text trùng)
 _CACHE_TTL_SECONDS = 600  # 10 phút
