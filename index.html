@@ -521,28 +521,46 @@ async function apiFetch(path, { method = 'GET', body, role: _ignored } = {}) {
 /* AUTH CONTEXT — provider gắn ở root, useAuth() để lấy session/profile/login/logout */
 const AuthContext = React.createContext(null);
 
+// Cache profile trong localStorage để tab reload / token refresh không phải splash lại.
+// Linear/Notion style: token refresh là silent — không flash UI.
+const PROFILE_CACHE_KEY = 'nhile_profile_v1';
+
+function readCachedProfile() {
+  try { return JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || 'null'); }
+  catch { return null; }
+}
+
 function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState(readCachedProfile);
+  // Nếu đã có profile cache → render ngay, không splash. Chỉ splash khi mount lần đầu chưa có cache.
+  const [loading, setLoading] = useState(() => readCachedProfile() === null);
+  const lastLoadedUserIdRef = useRef(profile?.id || null);
 
-  async function loadProfile(token) {
+  async function loadProfile(token, { silent = false } = {}) {
+    if (!silent) setLoading(true);
     try {
       const r = await fetch(`${API_BASE}/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!r.ok) {
-        // Backend không nhận token (sai env, profile chưa seed, ...) → coi như chưa login
-        setProfile(null);
-        if (r.status === 401) await sb.auth.signOut();
+        if (r.status === 401) {
+          localStorage.removeItem(PROFILE_CACHE_KEY);
+          setProfile(null);
+          lastLoadedUserIdRef.current = null;
+          await sb.auth.signOut();
+        }
         return;
       }
-      setProfile(await r.json());
+      const p = await r.json();
+      setProfile(p);
+      lastLoadedUserIdRef.current = p?.id || null;
+      try { localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(p)); } catch {}
     } catch (e) {
       console.error('[Auth] loadProfile failed', e);
-      setProfile(null);
+      // Giữ cache cũ — đừng kick user về login chỉ vì network blip.
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
@@ -551,14 +569,43 @@ function AuthProvider({ children }) {
     sb.auth.getSession().then(({ data }) => {
       if (!mounted) return;
       setSession(data.session);
-      if (data.session) loadProfile(data.session.access_token);
-      else setLoading(false);
+      if (data.session) {
+        // Có cache + cùng user → revalidate ngầm. Không cache → splash.
+        const cached = readCachedProfile();
+        const sameUser = cached && cached.id === data.session.user.id;
+        loadProfile(data.session.access_token, { silent: sameUser });
+        if (sameUser) setLoading(false);
+      } else {
+        localStorage.removeItem(PROFILE_CACHE_KEY);
+        setLoading(false);
+      }
     });
-    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => {
+
+    const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
       if (!mounted) return;
       setSession(s);
-      if (s) { setLoading(true); loadProfile(s.access_token); }
-      else { setProfile(null); setLoading(false); }
+
+      // SIGNED_OUT → clear hết
+      if (event === 'SIGNED_OUT' || !s) {
+        localStorage.removeItem(PROFILE_CACHE_KEY);
+        setProfile(null);
+        lastLoadedUserIdRef.current = null;
+        setLoading(false);
+        return;
+      }
+
+      // INITIAL_SESSION → đã handle ở getSession() trên
+      if (event === 'INITIAL_SESSION') return;
+
+      // SIGNED_IN với user khác → splash + reload profile
+      if (event === 'SIGNED_IN' && s.user.id !== lastLoadedUserIdRef.current) {
+        loadProfile(s.access_token);
+        return;
+      }
+
+      // TOKEN_REFRESHED, USER_UPDATED, SIGNED_IN-cùng-user (focus tab, etc.)
+      // → revalidate silent, không flash UI.
+      loadProfile(s.access_token, { silent: true });
     });
     return () => { mounted = false; sub.subscription.unsubscribe(); };
   }, []);

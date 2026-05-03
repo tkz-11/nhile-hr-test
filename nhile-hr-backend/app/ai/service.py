@@ -1,11 +1,43 @@
 import json
 import re
 import asyncio
+import hashlib
+import time
+from collections import OrderedDict
 import google.generativeai as genai
 from app.config import settings
 
 genai.configure(api_key=settings.gemini_api_key)
-model = genai.GenerativeModel("gemini-2.5-flash")
+# gemini-2.0-flash: free tier 15 RPM / 1500 RPD — gấp ~5x quota của gemini-2.5-flash
+model = genai.GenerativeModel("gemini-2.0-flash")
+
+# In-memory LRU cache cho prompt → response (tiết kiệm quota khi gõ lại text trùng)
+_CACHE_TTL_SECONDS = 600  # 10 phút
+_CACHE_MAX_ENTRIES = 256
+_response_cache: "OrderedDict[str, tuple[float, dict]]" = OrderedDict()
+
+
+def _cache_key(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def _cache_get(key: str) -> dict | None:
+    entry = _response_cache.get(key)
+    if not entry:
+        return None
+    ts, value = entry
+    if time.time() - ts > _CACHE_TTL_SECONDS:
+        _response_cache.pop(key, None)
+        return None
+    _response_cache.move_to_end(key)
+    return value
+
+
+def _cache_set(key: str, value: dict) -> None:
+    _response_cache[key] = (time.time(), value)
+    _response_cache.move_to_end(key)
+    while len(_response_cache) > _CACHE_MAX_ENTRIES:
+        _response_cache.popitem(last=False)
 
 
 def _extract_json(text: str) -> dict:
@@ -22,10 +54,47 @@ def _extract_json(text: str) -> dict:
     return json.loads(cleaned)
 
 
-async def _gemini(prompt: str) -> dict:
-    """Wrapper async cho Gemini — dùng to_thread vì SDK của google-generativeai chủ yếu sync."""
-    response = await asyncio.to_thread(model.generate_content, prompt)
-    return _extract_json(response.text)
+# Lỗi tạm thời từ Gemini SDK — đáng retry
+_RETRYABLE_ERRORS = ("ResourceExhausted", "DeadlineExceeded", "ServiceUnavailable", "InternalServerError")
+
+
+async def _gemini(prompt: str, max_retries: int = 2) -> dict:
+    """Gemini call với in-memory cache + exponential backoff retry trên rate limit.
+
+    Cache giảm quota khi user gõ lại text trùng. Retry tránh user thấy lỗi
+    transient ngay lần đầu (Gemini free tier 15 RPM hay bị burst).
+    """
+    key = _cache_key(prompt)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+
+    last_err: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = await asyncio.to_thread(model.generate_content, prompt)
+            data = _extract_json(response.text)
+            _cache_set(key, data)
+            return data
+        except Exception as e:
+            last_err = e
+            if type(e).__name__ in _RETRYABLE_ERRORS and attempt < max_retries:
+                # 1s, 2s, 4s — đủ để vượt qua rate limit window 6s của 10 RPM
+                await asyncio.sleep(2 ** attempt)
+                continue
+            raise
+    raise last_err  # type: ignore[misc]
+
+
+def _friendly_error(e: Exception) -> str:
+    """Map exception name → message tiếng Việt thân thiện cho UI."""
+    name = type(e).__name__
+    return {
+        "ResourceExhausted": "AI đang quá tải, vui lòng đợi 30 giây và thử lại.",
+        "DeadlineExceeded": "AI phản hồi chậm, vui lòng thử lại.",
+        "ServiceUnavailable": "Dịch vụ AI tạm thời gián đoạn, thử lại sau.",
+        "DefaultCredentialsError": "Cấu hình AI chưa hoàn tất — liên hệ quản trị.",
+    }.get(name, f"Không phân tích được bằng AI ({name}). Vui lòng thử lại.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,13 +132,12 @@ Chỉ trả về JSON thuần, không markdown, không giải thích thêm.
     try:
         return await _gemini(prompt)
     except Exception as e:
-        # Fallback an toàn nếu Gemini fail / rate limit
         return {
             "score": 50,
             "status": "vague",
             "highlights": [],
             "rewrite": text,
-            "feedback": f"Không phân tích được bằng AI ({type(e).__name__}). Vui lòng thử lại.",
+            "feedback": _friendly_error(e),
             "_error": str(e),
         }
 
@@ -100,7 +168,7 @@ Chỉ trả về JSON thuần.
         return {
             "approved": False,
             "awarded_points": 0,
-            "ai_feedback": "AI tạm thời không khả dụng. Bạn có thể thử lại sau.",
+            "ai_feedback": _friendly_error(e),
             "ai_reason": f"Lỗi gọi AI: {type(e).__name__}",
             "_error": str(e),
         }
@@ -125,7 +193,7 @@ Chỉ trả về JSON thuần.
         return await _gemini(prompt)
     except Exception as e:
         return {
-            "insights": "Không phân tích được bằng AI.",
+            "insights": _friendly_error(e),
             "patterns": [],
             "recommendations": [],
             "_error": str(e),
