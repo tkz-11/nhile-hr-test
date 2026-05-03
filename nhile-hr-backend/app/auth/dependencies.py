@@ -2,8 +2,12 @@ from typing import Optional
 from uuid import UUID
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from supabase import create_client
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
+from app.database import get_db
+from app.users.models import UserProfile
+from app.auth.jwt_verifier import verify_supabase_jwt
 
 security = HTTPBearer(auto_error=False)
 
@@ -12,7 +16,7 @@ DEV_USER_ID  = UUID("11111111-1111-1111-1111-111111111111")  # Backward compat: 
 DEV_ORG_ID   = UUID("00000000-0000-0000-0000-000000000001")
 DEV_TOKEN    = "dev-token"
 
-# Map role → (user_id, full_name) khớp seed data
+# Map role → (user_id, full_name, email) khớp seed data
 ROLE_PROFILES = {
     "hr_manager": (UUID("11111111-1111-1111-1111-111111111111"), "Nguyễn Thanh Trang", "hr@nhile.local"),
     "leader":     (UUID("22222222-2222-2222-2222-222222222222"), "Trần Văn Bình",      "leader1@nhile.local"),
@@ -27,6 +31,10 @@ class DevUser:
         self.id = uid
         self.org_id = DEV_ORG_ID
         self.email = email
+        self.full_name = name
+        self.primary_role = role
+        self.avatar_url = None
+        # Giữ user_metadata để code cũ dùng meta.get(...) không vỡ
         self.user_metadata = {"primary_role": role, "full_name": name}
 
 
@@ -37,40 +45,56 @@ def _is_dev() -> bool:
 async def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    db: AsyncSession = Depends(get_db),
 ):
     """Xác thực JWT từ Supabase. Trong dev mode, chấp nhận 'dev-token' hoặc thiếu header."""
     token = credentials.credentials if credentials else None
 
-    # ── Dev bypass: không cần token thật, chấp nhận header X-Dev-Role để switch role ──
+    # ── Dev bypass: chỉ active khi ENVIRONMENT=development ──
     if _is_dev() and (token is None or token == DEV_TOKEN):
         role = request.headers.get("X-Dev-Role", "hr_manager")
         if role not in ("hr_manager", "leader", "member"):
             role = "hr_manager"
         return DevUser(role=role)
 
+    # ── Real JWT path: verify HS256 cục bộ + load profile từ DB ──
     if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Thiếu token xác thực",
         )
 
-    supabase = create_client(settings.supabase_url, settings.supabase_anon_key)
+    payload = verify_supabase_jwt(token)  # raise 401 nếu sai
+
     try:
-        user = supabase.auth.get_user(token)
-        return user.user
-    except Exception:
+        user_uuid = UUID(payload["user_id"])
+    except (ValueError, TypeError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token không hợp lệ hoặc đã hết hạn",
+            detail="Token không hợp lệ",
         )
+
+    user = await db.get(UserProfile, user_uuid)
+    if not user:
+        # JWT hợp lệ nhưng chưa seed profile → coi như chưa onboard
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Profile chưa khởi tạo — liên hệ HR Manager",
+        )
+    return user
 
 
 def require_role(allowed_roles: list[str]):
-    """Factory tạo dependency kiểm tra role."""
+    """Factory tạo dependency kiểm tra role.
+
+    Hoạt động với cả DevUser (có user_metadata + primary_role) và UserProfile ORM
+    (có thuộc tính primary_role trực tiếp).
+    """
     async def _check_role(current_user=Depends(get_current_user)):
-        # DevUser dùng dict; SupabaseUser cũng dùng user_metadata dict
-        meta = getattr(current_user, "user_metadata", {}) or {}
-        user_role = meta.get("primary_role", "member")
+        user_role = getattr(current_user, "primary_role", None)
+        if not user_role:
+            meta = getattr(current_user, "user_metadata", {}) or {}
+            user_role = meta.get("primary_role", "member")
         if user_role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

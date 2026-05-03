@@ -10,6 +10,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600&family=Lexend:wght@500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
 
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script>
 tailwind.config = {
   theme: {
@@ -470,22 +471,43 @@ const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 /* API CONFIG */
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-  ? 'http://localhost:8000'
-  : 'https://nhile-hr-test.onrender.com'; 
-const DEV_TOKEN = 'dev-token';
+  ? 'http://localhost:8001'
+  : 'https://nhile-hr-test.onrender.com';
 
-/** Helper gọi API kèm Authorization + header X-Dev-Role để switch role test ở backend dev mode. */
-async function apiFetch(path, { role = 'hr_manager', method = 'GET', body } = {}) {
-  const headers = {
-    'Authorization': `Bearer ${DEV_TOKEN}`,
-    'X-Dev-Role': role,
-  };
+/* SUPABASE AUTH CLIENT
+ * Anon key public-by-design (RLS Postgres bảo vệ data thật).
+ * KHÔNG bao giờ paste service_role key vào đây — đó là God-mode chỉ dùng ở backend.
+ */
+const SUPABASE_URL = "https://vhimezeyrllpjwgawgjw.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZoaW1lemV5cmxscGp3Z2F3Z2p3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2OTkwOTcsImV4cCI6MjA5MzI3NTA5N30.qFMPvK1Q6kOJ0XSuS4D78si4akadmPrMSkHFKppnTZg";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  auth: { persistSession: true, autoRefreshToken: true, storage: window.localStorage },
+});
+
+/** Helper gọi API: lấy access_token live từ Supabase mỗi call để tránh stale.
+ *  Auto signOut khi 401 — onAuthStateChange sẽ tự đẩy về LoginPage.
+ *  Param `role` (nếu truyền) sẽ bị ignore — backend lấy role từ JWT/DB. */
+async function apiFetch(path, { method = 'GET', body, role: _ignored } = {}) {
+  const { data: { session } } = await sb.auth.getSession();
+  const headers = {};
+  if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
+
   const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+
+  if (res.status === 401) {
+    // Token hết hạn / bị revoke / tampered → kéo session về 0,
+    // AuthProvider sẽ render LoginPage qua onAuthStateChange.
+    await sb.auth.signOut();
+    const err = new Error('Phiên đăng nhập đã hết hạn');
+    err.status = 401;
+    throw err;
+  }
+
   const text = await res.text();
   let data; try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
@@ -494,6 +516,167 @@ async function apiFetch(path, { role = 'hr_manager', method = 'GET', body } = {}
     throw err;
   }
   return data;
+}
+
+/* AUTH CONTEXT — provider gắn ở root, useAuth() để lấy session/profile/login/logout */
+const AuthContext = React.createContext(null);
+
+function AuthProvider({ children }) {
+  const [session, setSession] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  async function loadProfile(token) {
+    try {
+      const r = await fetch(`${API_BASE}/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) {
+        // Backend không nhận token (sai env, profile chưa seed, ...) → coi như chưa login
+        setProfile(null);
+        if (r.status === 401) await sb.auth.signOut();
+        return;
+      }
+      setProfile(await r.json());
+    } catch (e) {
+      console.error('[Auth] loadProfile failed', e);
+      setProfile(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    let mounted = true;
+    sb.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data.session);
+      if (data.session) loadProfile(data.session.access_token);
+      else setLoading(false);
+    });
+    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => {
+      if (!mounted) return;
+      setSession(s);
+      if (s) { setLoading(true); loadProfile(s.access_token); }
+      else { setProfile(null); setLoading(false); }
+    });
+    return () => { mounted = false; sub.subscription.unsubscribe(); };
+  }, []);
+
+  const value = {
+    session, profile, loading,
+    login: (email, password) => sb.auth.signInWithPassword({ email, password }),
+    logout: () => sb.auth.signOut(),
+  };
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+const useAuth = () => React.useContext(AuthContext);
+
+/* SPLASH LOADER — hiển thị khi đang restore session từ localStorage */
+function SplashLoader() {
+  return (
+    <div className="min-h-screen flex items-center justify-center" style={{ background: '#F4F5F8' }}>
+      <div className="flex flex-col items-center gap-3">
+        <div className="w-10 h-10 border-3 border-[#C0392B] border-t-transparent rounded-full animate-spin"
+             style={{ borderWidth: 3 }}></div>
+        <p className="text-[13px] text-[#6B7280] font-medium">Đang tải phiên đăng nhập…</p>
+      </div>
+    </div>
+  );
+}
+
+/* LOGIN PAGE — card center, brand đỏ, error toast generic */
+function LoginPage() {
+  const { login } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    if (submitting) return;
+    setError('');
+    setSubmitting(true);
+    try {
+      const { error: err } = await login(email.trim(), password);
+      if (err) {
+        // Generic message — không reveal email tồn tại hay không
+        setError('Email hoặc mật khẩu không đúng');
+      }
+      // Nếu OK, onAuthStateChange sẽ tự đẩy sang MainApp — không cần làm gì.
+    } catch (_e) {
+      setError('Email hoặc mật khẩu không đúng');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4"
+         style={{ background: 'linear-gradient(135deg, #FAFAF9 0%, #F4F5F8 50%, #F1E8E5 100%)' }}>
+      <div className="w-full max-w-[420px]">
+        <div className="rounded-2xl bg-white/90 backdrop-blur-md border border-[#EAECF0] shadow-[0_20px_48px_rgba(0,0,0,0.08)] p-8">
+          {/* Logo + tagline */}
+          <div className="flex flex-col items-center mb-6">
+            <div className="w-12 h-12 rounded-2xl bg-[#C0392B] text-white flex items-center justify-center font-header font-semibold text-[18px] mb-3">
+              N
+            </div>
+            <h1 className="font-header text-[20px] font-semibold text-[#0A0A0A]">NhiLe HR</h1>
+            <p className="text-[13px] text-[#6B7280] mt-1">Hộ chiếu văn hóa NhiLe Team</p>
+          </div>
+
+          <form onSubmit={onSubmit} className="space-y-4">
+            <div>
+              <label className="block text-[12px] font-medium text-[#374151] mb-1.5">Email</label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
+                autoFocus
+                autoComplete="email"
+                placeholder="ten@nhile.local"
+                className="w-full px-3.5 py-2.5 rounded-lg border border-[#EAECF0] text-[14px] focus:outline-none focus:border-[#C0392B] focus:ring-2 focus:ring-[#C0392B]/10 transition"
+              />
+            </div>
+            <div>
+              <label className="block text-[12px] font-medium text-[#374151] mb-1.5">Mật khẩu</label>
+              <input
+                type="password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+                autoComplete="current-password"
+                className="w-full px-3.5 py-2.5 rounded-lg border border-[#EAECF0] text-[14px] focus:outline-none focus:border-[#C0392B] focus:ring-2 focus:ring-[#C0392B]/10 transition"
+              />
+            </div>
+
+            {error && (
+              <div className="px-3 py-2 rounded-lg bg-[#FEF2F2] border border-[#FECACA] text-[13px] text-[#B91C1C]">
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting || !email || !password}
+              className="w-full py-2.5 rounded-lg bg-[#C0392B] text-white font-medium text-[14px] hover:bg-[#A93226] disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+            >
+              {submitting && (
+                <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin"></span>
+              )}
+              {submitting ? 'Đang đăng nhập…' : 'Đăng nhập'}
+            </button>
+          </form>
+
+          <p className="text-center text-[12px] text-[#9CA3AF] mt-6">
+            Chưa có tài khoản? Liên hệ <span className="text-[#C0392B] font-medium">HR Manager</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // Đồng bộ với seed data trong supabase_seed.sql + dev mapping ở backend
@@ -1064,7 +1247,57 @@ function Sidebar({ user, activePage, onNav }) {
   );
 }
 
-function TopBar({ user, onSwitchRole, apiStatus, pageTitle }) {
+function UserMenu({ user }) {
+  const { logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const ref = React.useRef(null);
+
+  // Đóng menu khi click ra ngoài
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  const initials = (user.full_name || user.email || '?')
+    .split(/\s+/).map(s => s[0]).filter(Boolean).slice(-2).join('').toUpperCase();
+  const avatarBg = user.primary_role === 'hr_manager' ? '#C0392B'
+    : user.primary_role === 'leader' ? '#1F2937' : '#525252';
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-9 h-9 rounded-full flex items-center justify-center text-white font-semibold text-[12px] hover:ring-2 hover:ring-black/10 transition"
+        style={{ background: avatarBg }}
+        aria-label="Tài khoản"
+      >
+        {initials}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-[44px] w-[260px] bg-white border border-[#EAECF0] rounded-xl shadow-[0_12px_32px_rgba(0,0,0,0.10)] py-1.5 z-50">
+          <div className="px-3.5 py-2.5 border-b border-[#F3F4F6]">
+            <p className="text-[13px] font-semibold text-[#0A0A0A] truncate">{user.full_name || '—'}</p>
+            <p className="text-[11px] text-[#9CA3AF] truncate mt-0.5">{user.email}</p>
+            <span className="inline-block mt-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider"
+                  style={{ background: avatarBg + '14', color: avatarBg }}>
+              {ROLE_LABELS[user.primary_role] || user.primary_role}
+            </span>
+          </div>
+          <button
+            onClick={async () => { setOpen(false); await logout(); }}
+            className="w-full px-3.5 py-2 text-left text-[13px] text-[#374151] hover:bg-[#F9FAFB] font-medium"
+          >
+            Đăng xuất
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopBar({ user, apiStatus, pageTitle }) {
   return (
     <header className="h-[60px] border-b border-black/5 bg-white/80 backdrop-blur-[12px] sticky top-0 z-40 flex items-center justify-between px-6">
       {/* Page title thay vì greeting (đã có ở Sidebar profile) */}
@@ -1078,20 +1311,13 @@ function TopBar({ user, onSwitchRole, apiStatus, pageTitle }) {
         )}
       </div>
       <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1 bg-[#F4F5F8] border border-[#EAECF0] rounded-[10px] p-1">
-          {['hr_manager','leader','member'].map(r => (
-            <button key={r} onClick={() => onSwitchRole(r)}
-              className={`text-[13px] px-2.5 py-1 rounded-md font-medium transition-all ${user.primary_role === r ? 'bg-white text-[#0A0A0A] shadow-sm' : 'text-[#9CA3AF] hover:text-[#525252]'}`}>
-              {r === 'hr_manager' ? 'HR' : r === 'leader' ? 'Leader' : 'Member'}
-            </button>
-          ))}
-        </div>
         <button className="relative w-9 h-9 rounded-lg bg-[#F4F5F8] border border-[#EAECF0] flex items-center justify-center text-[#525252] hover:bg-[#EAECF0]">
           {IC.bell}
           <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 bg-[#DC2626] rounded-full flex items-center justify-center">
             <span className="text-[8px] text-white font-medium num-tab">2</span>
           </span>
         </button>
+        <UserMenu user={user} />
       </div>
     </header>
   );
@@ -3447,12 +3673,12 @@ function NhiLeStyleOverrides() {
 }
 
 /* APP */
-function App() {
-  const [role, setRole] = useState('hr_manager');
+function MainApp({ user }) {
   const [page, setPage] = useState('home');
   const [t, setTweak] = (typeof useTweaks === 'function' ? useTweaks(TWEAK_DEFAULTS) : [TWEAK_DEFAULTS, () => {}]);
   const [apiStatus, setApiStatus] = useState(null);
-  const user = PROFILES[role];
+  // role giờ là dẫn xuất từ profile DB — không state nữa, không cho UI đổi
+  const role = user.primary_role;
 
   useEffect(() => { applyTokens(t.mood, t.density, t.numerics, t.sidebarTheme); }, [t.mood, t.density, t.numerics, t.sidebarTheme]);
 
@@ -3474,7 +3700,7 @@ function App() {
       <NhiLeStyleOverrides />
       <Sidebar user={user} activePage={page} onNav={setPage} />
       <div className="flex-1 flex flex-col min-w-0">
-        <TopBar user={user} onSwitchRole={setRole} apiStatus={apiStatus} pageTitle={({home:'Trang chủ',retention:'Radar Giữ Chân Nhân Sự',passport:'Hộ Chiếu Giao Tiếp',culture:'Văn Hóa Đội Nhóm'})[page]} />
+        <TopBar user={user} apiStatus={apiStatus} pageTitle={({home:'Trang chủ',retention:'Radar Giữ Chân Nhân Sự',passport:'Hộ Chiếu Giao Tiếp',culture:'Văn Hóa Đội Nhóm'})[page]} />
         <main className="flex-1 overflow-auto">
           {page === 'home' && <HomePage user={user} onNav={setPage} />}
           {page === 'retention' && <RetentionPage user={user} useRealApi={t.useRealApi} role={role} />}
@@ -3530,7 +3756,16 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+function App() {
+  const { session, profile, loading } = useAuth();
+  if (loading) return <SplashLoader />;
+  if (!session || !profile) return <LoginPage />;
+  return <MainApp user={profile} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <AuthProvider><App /></AuthProvider>
+);
 
 </script>
 </body>

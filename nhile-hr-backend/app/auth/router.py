@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from app.auth.dependencies import (
-    get_current_user, DEV_TOKEN, DEV_USER_ID, DEV_ORG_ID, _is_dev,
+    get_current_user, DEV_TOKEN, _is_dev,
 )
 from app.auth.schemas import TokenResponse
 
@@ -26,12 +26,19 @@ async def dev_login(role: str = "hr_manager"):
 
 @router.get("/me")
 async def me(current_user=Depends(get_current_user)):
-    """Trả về thông tin user hiện tại (theo token)."""
-    meta = getattr(current_user, "user_metadata", {}) or {}
+    """Trả về profile của user đang login.
+
+    Trả về explicit dict (không serialize ORM thẳng) để chống leak field
+    nội bộ khi UserProfile model được mở rộng sau này.
+    """
+    # DevUser có user_metadata; UserProfile có thuộc tính trực tiếp.
+    # Đã chuẩn hóa cả hai có primary_role/full_name/avatar_url ở mức instance.
+    org_id = getattr(current_user, "org_id", None)
     return {
-        "id": str(getattr(current_user, "id", DEV_USER_ID)),
-        "org_id": str(getattr(current_user, "org_id", DEV_ORG_ID)),
+        "id": str(current_user.id),
+        "org_id": str(org_id) if org_id else None,
         "email": getattr(current_user, "email", None),
-        "full_name": meta.get("full_name", "Dev HR"),
-        "primary_role": meta.get("primary_role", "hr_manager"),
+        "full_name": getattr(current_user, "full_name", "") or "",
+        "primary_role": getattr(current_user, "primary_role", "member") or "member",
+        "avatar_url": getattr(current_user, "avatar_url", None),
     }
